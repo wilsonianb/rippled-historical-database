@@ -29,7 +29,7 @@ server = new Server({
 describe('create Hbase tables', function(done) {
   it('should create tables via rest API', function(done) {
     this.timeout(60000);
-    rest.initTables(function(err, resp) {
+    rest.initTables('ledgers', function(err, resp) {
       assert.ifError(err);
       done();
     });

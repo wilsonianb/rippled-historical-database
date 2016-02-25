@@ -1380,7 +1380,7 @@ describe('HBASE client and API endpoints', function () {
     return;
 
     console.log('removing tables');
-    rest.removeTables(function(err, resp) {
+    rest.removeTables('ledgers', function(err, resp) {
       console.log(err, resp);
       done();
     });
