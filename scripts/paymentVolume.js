@@ -263,8 +263,12 @@ function handleAggregation(params, done) {
       }, function (err, resp) {
         if (err) {
           reject(err);
+
+        // filter rows with no payments
         } else {
-          resolve(resp);
+          resolve(resp.filter(function(d) {
+            return !!d.count;
+          }));
         }
       });
     });
@@ -360,7 +364,11 @@ function handleAggregation(params, done) {
       count: count,
       exchange: { currency:'XRP' },
       exchangeRate: 1,
-      components: data
+      components: data.filter(function(d) {
+        return !!d.converted_amount;
+      }).sort(function(a,b) {
+        return b.converted_amount - a.converted_amount;
+      })
     }
   }
 
