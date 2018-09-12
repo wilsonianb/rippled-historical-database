@@ -12,6 +12,13 @@ var dateFormat = 'YYYY-MM-DDTHH:mm:ss.SSS[Z]';
 var manifests;
 var port = config.get('port') || 7111
 
+function makeRowKey(public_key, sequence) {
+  return [
+    public_key,
+    sequence.toString().padStart(10, '0')
+  ].join('|');
+}
+
 describe('handleManifest', function(done) {
   beforeEach(function(done) {
     manifests = new Manifests();
@@ -39,6 +46,7 @@ describe('handleManifest', function(done) {
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].rowkey, makeRowKey(manifest.master_key, manifest.seq));
       assert.strictEqual(rows[0].master_public_key, manifest.master_key);
       assert.strictEqual(rows[0].ephemeral_public_key, manifest.signing_key);
       assert.strictEqual(rows[0].sequence, manifest.seq.toString());
@@ -48,6 +56,7 @@ describe('handleManifest', function(done) {
       })
     }).then((rows) => {
       assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].rowkey, manifest.master_key);
       assert.strictEqual(rows[0].ephemeral_public_key, manifest.signing_key);
       assert.strictEqual(rows[0].sequence, manifest.seq.toString());
       done();
@@ -151,21 +160,102 @@ describe('handleManifest', function(done) {
     }).then(() => { done(); })
   });
 
+  it('should update last_datetime for duplicate manifest', function(done) {
+    const manifest = {
+      signing_key: 'n9LRZXPh1XZaJr5kVpdciN76WCCcb5ZRwjvHywd4Vc4fxyfGEDJA',
+      master_key: 'nHU5wPBpv1kk3kafS2ML2GhyoGJuHhPP4fCa2dwYUjMT5wR8Dk5B',
+      seq: 4,
+      signature: 'ba37041d4d9739ebf721a75f7a9e408d92b9920e71a6af5a9fe11e88f05c8937771e1811cf262f489b69c67cc80c96518a6e5c17091dd743246229d21ee2c00c'
+    }
+
+    let last_datetime
+
+    manifests.handleManifest(manifest)
+    .then(() => {
+      return hbase.getAllRows({
+        table: 'manifests_by_validator'
+      });
+    }).then((rows) => {
+      assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].rowkey, makeRowKey(manifest.master_key, manifest.seq));
+      assert.strictEqual(rows[0].master_public_key, manifest.master_key);
+      assert.strictEqual(rows[0].ephemeral_public_key, manifest.signing_key);
+      assert.strictEqual(rows[0].sequence, manifest.seq.toString());
+      assert.strictEqual(rows[0].signature, manifest.signature);
+      assert.strictEqual(rows[0].count, '1');
+      last_datetime = rows[0].last_datetime;
+      return manifests.handleManifest(manifest)
+    }).then(() => {
+      //wait >1 second for updateManifest timer
+      setTimeout(function() {
+        hbase.getAllRows({
+          table: 'manifests_by_validator'
+        }).then((rows) => {
+          assert.strictEqual(rows.length, 1);
+          assert.strictEqual(rows[0].rowkey, makeRowKey(manifest.master_key, manifest.seq));
+          assert.strictEqual(rows[0].master_public_key, manifest.master_key);
+          assert.strictEqual(rows[0].ephemeral_public_key, manifest.signing_key);
+          assert.strictEqual(rows[0].sequence, manifest.seq.toString());
+          assert.strictEqual(rows[0].signature, manifest.signature);
+          assert.strictEqual(rows[0].count, '2');
+          assert(last_datetime < rows[0].last_datetime)
+          done();
+        });
+      }, 1010);
+    })
+  });
+
+  it('should update row for duplicate manifest from different run', function(done) {
+    const manifest = {
+      signing_key: 'n9LRZXPh1XZaJr5kVpdciN76WCCcb5ZRwjvHywd4Vc4fxyfGEDJA',
+      master_key: 'nHU5wPBpv1kk3kafS2ML2GhyoGJuHhPP4fCa2dwYUjMT5wR8Dk5B',
+      seq: 4,
+      signature: 'ba37041d4d9739ebf721a75f7a9e408d92b9920e71a6af5a9fe11e88f05c8937771e1811cf262f489b69c67cc80c96518a6e5c17091dd743246229d21ee2c00c'
+    }
+
+    let manifestsNew = new Manifests();
+
+    manifests.handleManifest(manifest)
+    .then(() => {
+      return manifestsNew.start();
+    }).then(() => {
+      return manifestsNew.handleManifest(manifest)
+    }).then(() => {
+      //wait >1 second for updateManifest timer
+      setTimeout(function() {
+        hbase.getAllRows({
+          table: 'manifests_by_validator'
+        }).then((rows) => {
+          assert.strictEqual(rows.length, 1);
+          assert.strictEqual(rows[0].rowkey, makeRowKey(manifest.master_key, manifest.seq));
+          assert.strictEqual(rows[0].master_public_key, manifest.master_key);
+          assert.strictEqual(rows[0].ephemeral_public_key, manifest.signing_key);
+          assert.strictEqual(rows[0].sequence, manifest.seq.toString());
+          assert.strictEqual(rows[0].signature, manifest.signature);
+          assert.strictEqual(rows[0].count, '2');
+          done();
+        });
+      }, 1010);
+    })
+  });
+
   it('should cache new manifests', function(done) {
     const master_public_key = 'nHU5wPBpv1kk3kafS2ML2GhyoGJuHhPP4fCa2dwYUjMT5wR8Dk5B'
     const old_ephemeral_public_key = 'n9KXuFUqkykLVr8oDwDeNuu33akSuUXShNER4y96Uco88R4xwpB5'
+    const old_seq = 2
     const new_ephemeral_public_key = 'n9LRZXPh1XZaJr5kVpdciN76WCCcb5ZRwjvHywd4Vc4fxyfGEDJA'
+    const new_seq = 4
 
     manifests.handleManifest({
       signing_key: old_ephemeral_public_key,
       master_key: master_public_key,
-      seq: 2,
+      seq: old_seq,
       signature: '58a01747386a7dc26e21512c52a7a01ef6ad2efc99fc2ecf0d288665f7bf7e831949abf7129dada2c47f5633ffa73a1a00d5fc061892ecead3a014a99924480e'
     }).then(() => {
       return manifests.handleManifest({
         signing_key: new_ephemeral_public_key,
         master_key: master_public_key,
-        seq: 4,
+        seq: new_seq,
         signature: 'ba37041d4d9739ebf721a75f7a9e408d92b9920e71a6af5a9fe11e88f05c8937771e1811cf262f489b69c67cc80c96518a6e5c17091dd743246229d21ee2c00c'
       });
     }).then(() => {
@@ -174,36 +264,43 @@ describe('handleManifest', function(done) {
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 2);
+      assert.strictEqual(rows[0].rowkey, makeRowKey(master_public_key, old_seq));
       assert.strictEqual(rows[0].master_public_key, master_public_key);
       assert.strictEqual(rows[0].ephemeral_public_key, old_ephemeral_public_key);
+      assert.strictEqual(rows[0].sequence, old_seq.toString());
+      assert.strictEqual(rows[1].rowkey, makeRowKey(master_public_key, new_seq));
       assert.strictEqual(rows[1].master_public_key, master_public_key);
       assert.strictEqual(rows[1].ephemeral_public_key, new_ephemeral_public_key);
+      assert.strictEqual(rows[1].sequence, new_seq.toString());
       return hbase.getAllRows({
         table: 'manifests_by_master_key'
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].rowkey, master_public_key);
       assert.strictEqual(rows[0].ephemeral_public_key, new_ephemeral_public_key);
-      assert.strictEqual(rows[0].sequence, '4');
+      assert.strictEqual(rows[0].sequence, new_seq.toString());
       done();
     });
   });
 
   it('should not cache new stale manifests', function(done) {
     const master_public_key = 'nHU5wPBpv1kk3kafS2ML2GhyoGJuHhPP4fCa2dwYUjMT5wR8Dk5B'
-    const old_ephemeral_public_key = 'n9LRZXPh1XZaJr5kVpdciN76WCCcb5ZRwjvHywd4Vc4fxyfGEDJA'
-    const new_ephemeral_public_key = 'n9KXuFUqkykLVr8oDwDeNuu33akSuUXShNER4y96Uco88R4xwpB5'
+    const ephemeral_public_key = 'n9LRZXPh1XZaJr5kVpdciN76WCCcb5ZRwjvHywd4Vc4fxyfGEDJA'
+    const seq = 4
+    const stale_ephemeral_public_key = 'n9KXuFUqkykLVr8oDwDeNuu33akSuUXShNER4y96Uco88R4xwpB5'
+    const stale_seq = 2
 
     manifests.handleManifest({
-      signing_key: old_ephemeral_public_key,
+      signing_key: ephemeral_public_key,
       master_key: master_public_key,
-      seq: 4,
+      seq: seq,
       signature: 'ba37041d4d9739ebf721a75f7a9e408d92b9920e71a6af5a9fe11e88f05c8937771e1811cf262f489b69c67cc80c96518a6e5c17091dd743246229d21ee2c00c'
     }).then(() => {
       return manifests.handleManifest({
-        signing_key: new_ephemeral_public_key,
+        signing_key: stale_ephemeral_public_key,
         master_key: master_public_key,
-        seq: 2,
+        seq: stale_seq,
         signature: '58a01747386a7dc26e21512c52a7a01ef6ad2efc99fc2ecf0d288665f7bf7e831949abf7129dada2c47f5633ffa73a1a00d5fc061892ecead3a014a99924480e'
       });
     }).then(() => {
@@ -212,17 +309,22 @@ describe('handleManifest', function(done) {
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 2);
+      assert.strictEqual(rows[0].rowkey, makeRowKey(master_public_key, stale_seq));
       assert.strictEqual(rows[0].master_public_key, master_public_key);
-      assert.strictEqual(rows[0].ephemeral_public_key, new_ephemeral_public_key);
+      assert.strictEqual(rows[0].ephemeral_public_key, stale_ephemeral_public_key);
+      assert.strictEqual(rows[0].sequence, stale_seq.toString());
+      assert.strictEqual(rows[1].rowkey, makeRowKey(master_public_key, seq));
       assert.strictEqual(rows[1].master_public_key, master_public_key);
-      assert.strictEqual(rows[1].ephemeral_public_key, old_ephemeral_public_key);
+      assert.strictEqual(rows[1].ephemeral_public_key, ephemeral_public_key);
+      assert.strictEqual(rows[1].sequence, seq.toString());
       return hbase.getAllRows({
         table: 'manifests_by_master_key'
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 1);
-      assert.strictEqual(rows[0].ephemeral_public_key, old_ephemeral_public_key);
-      assert.strictEqual(rows[0].sequence, '4');
+      assert.strictEqual(rows[0].rowkey, master_public_key);
+      assert.strictEqual(rows[0].ephemeral_public_key, ephemeral_public_key);
+      assert.strictEqual(rows[0].sequence, seq.toString());
       done();
     });
   });
@@ -317,6 +419,9 @@ describe('handleManifest', function(done) {
       });
     }).then((rows) => {
       assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].rowkey, manifest.master_public_key);
+      assert.strictEqual(rows[0].ephemeral_public_key, manifest.ephemeral_public_key);
+      assert.strictEqual(rows[0].sequence, manifest.sequence.toString());
       var master_public_key = manifests.getMasterKey(manifest.ephemeral_public_key);
       assert.strictEqual(master_public_key, undefined);
       return manifests.start();
@@ -362,6 +467,7 @@ describe('validator manifests endpoint', function() {
       assert.strictEqual(res.statusCode, 200)
       assert.strictEqual(body.manifests.length, 1)
       _.isMatch(body.manifests[0], mockResponses[pubkey][0])
+      assert.strictEqual(body.manifests[0].count, 1)
       done()
     });
   });
